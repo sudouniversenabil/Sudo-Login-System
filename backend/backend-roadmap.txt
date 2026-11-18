@@ -1,0 +1,604 @@
+BACKEND LOGIN SYSTEM
+Folder structure, roadmap, packages, and how the pieces fit together
+Node.js + TypeScript + PostgreSQL
+
+This file is a learning guide. It does not replace the two frontend pages.
+The login page and the profile page live in this Next.js app.
+Build the server described here as a separate Node.js project when you are ready.
+
+
+============================================================
+1. WHAT YOU ARE BUILDING
+============================================================
+
+A small API with four jobs:
+
+  1. Register a user with name, email, and password.
+  2. Send a one-time code (OTP) to that email.
+  3. Refuse login until the code is correct and the email is marked verified.
+  4. After login, let the user open their own profile.
+
+The browser should never be trusted. The server checks every request again.
+
+
+============================================================
+2. FOLDER STRUCTURE
+============================================================
+
+Create this as its own folder, for example backend/, next to the frontend.
+Do not mix these server files into the Next.js app folder unless you later
+choose to do that on purpose.
+
+backend/
+  package.json              Project name, scripts, and installed packages
+  package-lock.json         Exact package versions (created by npm)
+  tsconfig.json             TypeScript compiler settings
+  .env                      Secrets for your machine only. Never commit this
+  .env.example              Same keys as .env, with empty or fake values
+  .gitignore                Tells git to ignore node_modules, dist, and .env
+
+  sql/
+    001_users.sql           Creates the users table
+    002_email_otps.sql      Creates the one-time-code table
+    003_sessions.sql        Creates the login-session table
+
+  src/
+    server.ts               Starts the HTTP server
+    app.ts                  Builds the Express app and mounts middleware
+
+    config/
+      env.ts                Reads and checks environment variables at startup
+      database.ts           Creates the PostgreSQL connection pool
+
+    routes/
+      auth.routes.ts        POST /auth/register, /auth/verify-email,
+                            /auth/login, /auth/logout
+      profile.routes.ts     GET /profile  (requires a valid session)
+
+    controllers/
+      auth.controller.ts    Reads the HTTP request and sends the HTTP response
+      profile.controller.ts Same job for the profile route
+
+    services/
+      auth.service.ts       Registration, OTP check, login, logout rules
+      profile.service.ts    Loads the signed-in user's profile
+      mail.service.ts       Sends the OTP email
+
+    repositories/
+      user.repository.ts    SQL for the users table
+      otp.repository.ts     SQL for the email_otps table
+      session.repository.ts SQL for the sessions table
+
+    middleware/
+      require-auth.ts       Blocks requests that have no valid session
+      error-handler.ts      Turns thrown errors into clean JSON responses
+      rate-limit.ts         Slows repeated login and OTP attempts
+
+    validation/
+      auth.schema.ts        Zod rules for name, email, password, and OTP
+      profile.schema.ts     Zod rules if the profile route accepts input
+
+    lib/
+      password.ts           Hashes and checks passwords with Argon2
+      otp.ts                Creates a random 6-digit code and hashes it
+      session-token.ts      Creates a random session token and hashes it
+      cookies.ts            Sets and clears the httpOnly session cookie
+
+    types/
+      express.d.ts          Adds userId to the Express request type
+
+What each layer does, in one sentence:
+
+  routes        Declare the URL and which controller handles it.
+  controllers   Translate HTTP in and HTTP out. No SQL here.
+  services      Hold the business rules, such as "unverified users cannot log in".
+  repositories  Talk to PostgreSQL. This is the only layer that writes SQL.
+  middleware    Run before a route, for example to check the session cookie.
+  validation    Reject bad input before it reaches a service.
+  lib           Small helpers used by more than one feature.
+  config        Start-up settings and the database connection.
+
+
+============================================================
+3. PACKAGES TO INSTALL
+============================================================
+
+Runtime packages:
+
+  express
+      The HTTP framework. It receives requests and sends responses.
+      Easy to learn and widely used.
+
+  pg
+      The node-postgres driver. Your app uses it to talk to PostgreSQL.
+      Use parameterized queries ($1, $2) every time.
+
+  argon2
+      Hashes passwords with the Argon2id algorithm.
+      This is the current recommended choice for password storage.
+      bcrypt is an acceptable older choice if Argon2 is hard to install.
+
+  zod
+      Checks that incoming JSON has the right shape and types.
+      Use it on every request body before you use the data.
+
+  dotenv
+      Loads the .env file into process.env while you develop.
+
+  helmet
+      Sets safer HTTP headers so the browser is less exposed to common attacks.
+
+  cors
+      Lets you name the exact frontend origin that may call the API.
+
+  cookie-parser
+      Reads the session cookie from the request.
+
+  express-rate-limit
+      Limits how often one IP can hit login, register, and OTP routes.
+
+  nodemailer
+      Sends the OTP email through an SMTP provider.
+
+Development packages:
+
+  typescript
+      The TypeScript compiler.
+
+  tsx
+      Runs TypeScript directly while you develop, and watches for file changes.
+
+  @types/node
+  @types/express
+  @types/pg
+  @types/cookie-parser
+  @types/cors
+  @types/nodemailer
+      Type definitions so TypeScript understands those libraries.
+
+Optional, useful later:
+
+  pino and pino-http
+      Structured logs. Log events, not passwords or OTP codes.
+
+  vitest and supertest
+      Automated tests for services and HTTP routes.
+
+You do not need a heavy framework such as NestJS for this first system.
+Express plus the folders above is enough to learn the architecture.
+
+
+============================================================
+4. BASH COMMANDS
+============================================================
+
+Run these from the parent of this frontend project, or from any folder
+where you want the server to live.
+
+--- Create the project and folders ---
+
+mkdir -p backend/src/{config,routes,controllers,services,repositories,middleware,validation,lib,types}
+mkdir -p backend/sql
+cd backend
+npm init -y
+
+--- Install packages ---
+
+npm install express pg argon2 zod dotenv helmet cors cookie-parser express-rate-limit nodemailer
+npm install -D typescript tsx @types/node @types/express @types/pg @types/cookie-parser @types/cors @types/nodemailer
+
+--- Create the TypeScript config ---
+
+npx tsc --init --rootDir src --outDir dist --strict --esModuleInterop --module nodenext --moduleResolution nodenext --target ES2022
+
+--- Create the env example and gitignore ---
+
+cat > .env.example << 'EOF'
+PORT=4000
+NODE_ENV=development
+DATABASE_URL=postgres://app_user:change-me@localhost:5432/login_app
+COOKIE_SECRET=replace-with-a-long-random-string
+APP_ORIGIN=http://localhost:3000
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+MAIL_FROM="Practice Login <no-reply@example.com>"
+EOF
+
+cp .env.example .env
+
+printf '%s\n' node_modules dist .env >> .gitignore
+
+--- Add scripts inside package.json ---
+
+npm pkg set scripts.dev="tsx watch src/server.ts"
+npm pkg set scripts.build="tsc"
+npm pkg set scripts.start="node dist/server.js"
+npm pkg set type="module"
+
+--- PostgreSQL: create the database and a limited user ---
+
+# Install PostgreSQL with your system package manager if it is not installed.
+# Arch Linux example:
+#   sudo pacman -S postgresql
+#   sudo systemctl enable --now postgresql
+
+sudo -u postgres psql << 'EOF'
+CREATE USER app_user WITH PASSWORD 'change-me';
+CREATE DATABASE login_app OWNER app_user;
+EOF
+
+# Apply the SQL files after you write them:
+psql "postgres://app_user:change-me@localhost:5432/login_app" -f sql/001_users.sql
+psql "postgres://app_user:change-me@localhost:5432/login_app" -f sql/002_email_otps.sql
+psql "postgres://app_user:change-me@localhost:5432/login_app" -f sql/003_sessions.sql
+
+--- Run the API while you develop ---
+
+npm run dev
+
+Change the password "change-me" before you use this anywhere except your own computer.
+Put the real password only in .env. Leave .env.example with a placeholder.
+
+
+============================================================
+5. HOW NODE.JS CONNECTS TO POSTGRESQL
+============================================================
+
+PostgreSQL is a separate program. Node.js does not contain the database.
+The pg package opens TCP connections to it and sends SQL text.
+
+Use a Pool, not a single Client. A pool keeps a few connections open and
+reuses them. Creating a new connection on every request is slow.
+
+File: src/config/database.ts
+
+  import pg from "pg";
+
+  const { Pool } = pg;
+
+  export const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
+
+  export async function query<T extends pg.QueryResultRow>(
+    text: string,
+    params: unknown[] = [],
+  ): Promise<pg.QueryResult<T>> {
+    return pool.query<T>(text, params);
+  }
+
+DATABASE_URL looks like this:
+
+  postgres://USER:PASSWORD@HOST:PORT/DATABASE_NAME
+
+Example:
+
+  postgres://app_user:change-me@localhost:5432/login_app
+
+The important safety rule:
+
+  Never build SQL by joining strings with user input.
+
+  Unsafe idea:
+    "SELECT * FROM users WHERE email = '" + email + "'"
+
+  Safe call:
+    query("SELECT id, name, email FROM users WHERE email = $1", [email])
+
+  $1 is a placeholder. pg sends the email as data, not as SQL.
+  That is how you prevent SQL injection. More detail is in
+  backend-security.md.
+
+Check the connection once at startup:
+
+  const result = await query("SELECT 1 AS ok");
+  console.log("database connected", result.rows[0].ok);
+
+If this throws, the URL, the password, or the running server is wrong.
+Fix that before you write routes.
+
+
+============================================================
+6. DATABASE TABLES
+============================================================
+
+sql/001_users.sql
+
+  CREATE TABLE users (
+    id                UUID PRIMARY KEY,
+    name              TEXT NOT NULL,
+    email             TEXT NOT NULL UNIQUE,
+    password_hash     TEXT NOT NULL,
+    email_verified_at TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  A NULL email_verified_at means "not verified yet".
+  Login must reject that user.
+
+sql/002_email_otps.sql
+
+  CREATE TABLE email_otps (
+    id          UUID PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash   TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    used_at     TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX email_otps_user_id_idx ON email_otps (user_id);
+
+  Store a hash of the code, not the code itself.
+  used_at stops the same code from being reused.
+  attempts counts wrong guesses.
+
+sql/003_sessions.sql
+
+  CREATE TABLE sessions (
+    id          UUID PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX sessions_user_id_idx ON sessions (user_id);
+
+  The cookie holds the raw token. The table holds only the hash.
+  If the database leaks, the cookies cannot be replayed from the hashes.
+
+
+============================================================
+7. STEP-BY-STEP ROADMAP
+============================================================
+
+Do these in order. Each step should run before you start the next one.
+
+Step 1. Create the folder and install packages
+  Use the bash commands in section 4.
+  Run npm run dev and make sure TypeScript starts.
+  Add a temporary GET /health route that returns { "ok": true }.
+
+Step 2. Lock down environment variables
+  In src/config/env.ts, read process.env with Zod.
+  Require DATABASE_URL, COOKIE_SECRET, APP_ORIGIN, and the SMTP values.
+  If a required value is missing, throw and refuse to start.
+  A server that starts with a blank secret is already unsafe.
+
+Step 3. Connect PostgreSQL
+  Write src/config/database.ts as shown in section 5.
+  Create the database and the app_user role.
+  Run the three SQL files.
+  Confirm SELECT 1 works from the Node process.
+
+Step 4. Add validation
+  In auth.schema.ts, describe the bodies:
+
+    register: name (2 to 80 chars), email, password (10 to 128 chars)
+    verify:   email, code (exactly 6 digits)
+    login:    email, password
+
+  In the controller, call schema.safeParse(req.body).
+  If it fails, return 400 with a short message.
+  Do this before any database call.
+
+Step 5. Hash passwords
+  In lib/password.ts:
+
+    import argon2 from "argon2";
+
+    export function hashPassword(password: string) {
+      return argon2.hash(password);
+    }
+
+    export function verifyPassword(hash: string, password: string) {
+      return argon2.verify(hash, password);
+    }
+
+  The users table stores password_hash only.
+  There is no column named password.
+
+Step 6. Registration
+  Route: POST /auth/register
+  Service steps:
+    a. Normalize the email to lowercase trim.
+    b. If the email already exists, return a conflict error.
+    c. Hash the password.
+    d. Insert the user with email_verified_at = NULL.
+    e. Create an OTP (step 7) and email it.
+    f. Respond with 201 and a message such as
+       "Check your email for a verification code."
+  Do not return the OTP in the JSON body.
+  Do not log the password or the OTP.
+
+Step 7. Create and send the OTP
+  In lib/otp.ts, generate 6 digits with Node's crypto.randomInt(0, 1000000).
+  Pad it to 6 characters.
+  Hash it before saving. A simple approach is SHA-256 of the code plus
+  a server-side pepper from the environment. Argon2 also works, but a fast
+  hash is acceptable for a short-lived code if you also limit attempts.
+  Set expires_at to now plus 10 minutes.
+  Set attempts to 0 and used_at to NULL.
+  Delete or ignore older unused codes for that user so only one code is live.
+  mail.service.ts sends a plain email: "Your code is 123456. It expires in 10 minutes."
+  In local development you may print the code to the server console.
+  Turn that print off when NODE_ENV is production.
+
+Step 8. Verify the email
+  Route: POST /auth/verify-email
+  Service steps:
+    a. Find the user by email. If missing, return a generic failure.
+    b. Load the latest unused, unexpired code for that user.
+    c. If attempts is already 5 or more, reject and require a new code.
+    d. Compare the hash of the submitted code with code_hash.
+    e. On mismatch, add 1 to attempts and return 400.
+    f. On match, set used_at = NOW() and users.email_verified_at = NOW()
+       in one database transaction.
+  After this, the user may log in. Verification itself does not have to
+  create a session. Keep those two actions separate so the flow matches
+  the requirement: verify first, then log in.
+
+Step 9. Login
+  Route: POST /auth/login
+  Service steps:
+    a. Find the user by email.
+    b. If the user does not exist, or the password does not match,
+       return the same message: "Email or password is incorrect."
+       Use a dummy Argon2 verify when the user is missing so the timing
+       is closer for both cases. Do this so attackers cannot tell which
+       emails are registered just from the response speed.
+    c. If email_verified_at is NULL, return 403 with
+       "Verify your email before you sign in."
+    d. Create 32 random bytes with crypto.randomBytes.
+       Send the raw token in an httpOnly cookie.
+       Store only the SHA-256 hash in sessions.token_hash.
+    e. Set the cookie:
+         httpOnly: true
+         secure: true in production
+         sameSite: "lax"
+         path: "/"
+         maxAge: 7 days, or shorter if you prefer
+  Respond with the public profile: id, name, email.
+  Never respond with password_hash or the session token in JSON
+  if the cookie already carries it.
+
+Step 10. Logout
+  Route: POST /auth/logout
+  Read the cookie, hash it, delete that session row, clear the cookie.
+  Even if the cookie is already missing, return 200.
+  Deleting the row means a stolen cookie stops working.
+
+Step 11. Profile
+  Route: GET /profile
+  Attach require-auth before the controller.
+  The middleware hashes the cookie token, finds a session that is not
+  expired, and sets req.userId.
+  The service loads that user and returns:
+    id, name, email, emailVerified: true, createdAt
+  If there is no session, return 401.
+  Do not accept a user id from the query string. The id comes from the
+  session, so one user cannot ask for another user's profile by changing a URL.
+
+Step 12. Protect the routes
+  Add helmet() and cors({ origin: APP_ORIGIN, credentials: true }) in app.ts.
+  Add rate limits:
+    register, login, verify-email, and resend-code: a small limit
+    such as 5 requests per 15 minutes per IP.
+  Add the error handler last, after the routes.
+  Return JSON errors. Hide stack traces when NODE_ENV is production.
+
+Step 13. Resend code
+  Route: POST /auth/resend-code
+  Body: { email }
+  If the user exists and is not verified, issue a new code and email it.
+  Always return the same message, whether or not the email exists:
+    "If that account is waiting for verification, a new code was sent."
+  Rate limit this route. It is easy to abuse for email spam.
+
+Step 14. Try the whole flow
+  Use curl or a small HTTP client.
+
+  Register:
+    curl -i -c cookies.txt -H "Content-Type: application/json" \
+      -d '{"name":"Ada Lovelace","email":"ada@example.com","password":"correct-horse-1"}' \
+      http://localhost:4000/auth/register
+
+  Verify with the code from your development mailbox or server log:
+    curl -i -H "Content-Type: application/json" \
+      -d '{"email":"ada@example.com","code":"123456"}' \
+      http://localhost:4000/auth/verify-email
+
+  Login before verification must fail.
+  Login after verification must set a cookie:
+    curl -i -c cookies.txt -H "Content-Type: application/json" \
+      -d '{"email":"ada@example.com","password":"correct-horse-1"}' \
+      http://localhost:4000/auth/login
+
+  Profile must fail without the cookie and succeed with it:
+    curl -i -b cookies.txt http://localhost:4000/profile
+
+  Logout, then call profile again. It must return 401.
+
+Step 15. Connect the frontend later
+  The current frontend stores a practice account in the browser so the two
+  pages work today.
+  When your API exists, change the forms to call:
+    POST http://localhost:4000/auth/register
+    POST http://localhost:4000/auth/verify-email
+    POST http://localhost:4000/auth/login
+    GET  http://localhost:4000/profile
+    POST http://localhost:4000/auth/logout
+  Send credentials: "include" from fetch so the browser stores the cookie.
+  Remove the on-screen practice code. The email is the only place the code
+  should appear.
+
+
+============================================================
+8. HOW EACH FEATURE WORKS, IN PLAIN LANGUAGE
+============================================================
+
+Registration
+  The user sends name, email, and password.
+  Zod rejects junk.
+  Argon2 turns the password into a hash.
+  PostgreSQL stores the person with "email not verified".
+  The server creates a short code, stores a hash of that code, and emails
+  the real code.
+  The user still cannot log in.
+
+OTP verification
+  The user sends the email and the code they received.
+  The server hashes the code they typed and compares it to the stored hash.
+  Too many misses, or an old code, and the attempt fails.
+  A match sets email_verified_at.
+  The code is then marked used so it cannot be replayed.
+
+Login
+  The server checks the password hash and the verified flag.
+  Both must pass.
+  It then creates a random session and puts that secret in an httpOnly cookie.
+  The profile page, or the GET /profile call, sends that cookie back
+  automatically. JavaScript on the page should not need to read it.
+
+Profile
+  The middleware turns the cookie into a user id.
+  The handler loads that one user.
+  Signing out deletes the session on the server and clears the cookie.
+
+
+============================================================
+9. SUGGESTED FILE ORDER WHEN YOU WRITE CODE
+============================================================
+
+  1. src/config/env.ts
+  2. src/config/database.ts
+  3. sql/001_users.sql
+  4. sql/002_email_otps.sql
+  5. sql/003_sessions.sql
+  6. src/lib/password.ts
+  7. src/lib/otp.ts
+  8. src/lib/session-token.ts
+  9. src/lib/cookies.ts
+  10. src/validation/auth.schema.ts
+  11. src/repositories/user.repository.ts
+  12. src/repositories/otp.repository.ts
+  13. src/repositories/session.repository.ts
+  14. src/services/mail.service.ts
+  15. src/services/auth.service.ts
+  16. src/services/profile.service.ts
+  17. src/controllers/auth.controller.ts
+  18. src/controllers/profile.controller.ts
+  19. src/middleware/require-auth.ts
+  20. src/middleware/error-handler.ts
+  21. src/middleware/rate-limit.ts
+  22. src/routes/auth.routes.ts
+  23. src/routes/profile.routes.ts
+  24. src/app.ts
+  25. src/server.ts
+
+Read backend-security.md before you treat any of this as production-ready.
+That file explains the security choices behind these steps.
