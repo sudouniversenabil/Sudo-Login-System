@@ -1,4 +1,4 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+This is the Next.js frontend for the login system. It uses the API in `../backend`.
 
 ## Getting Started
 
@@ -15,6 +15,20 @@ bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+## Connect to the backend
+
+Start the backend on port `4000` and the frontend on port `3000`. The frontend
+uses `http://localhost:4000` by default. To use a different API URL, set
+`NEXT_PUBLIC_API_URL` in `frontend/.env.local`, for example:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:4000
+```
+
+The backend's `APP_ORIGIN` must match the frontend origin. The browser sends
+the server-managed session cookie with API requests; verification codes are
+sent by email and are never shown in the frontend.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

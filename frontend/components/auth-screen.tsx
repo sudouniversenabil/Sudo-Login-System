@@ -3,14 +3,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
-  AuthError,
+  AuthApiError,
   currentUser,
-  getPracticeCode,
   registerAccount,
-  resendPracticeCode,
+  resendVerificationCode,
   signIn,
   verifyEmailCode,
-} from "@/lib/demo-auth";
+} from "@/lib/auth-api";
 
 type Mode = "login" | "register" | "verify";
 
@@ -29,14 +28,23 @@ export function AuthScreen() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
-  const [demoCode, setDemoCode] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [alreadyIn, setAlreadyIn] = useState(false);
 
   useEffect(() => {
-    setAlreadyIn(Boolean(currentUser()));
+    let active = true;
+    currentUser()
+      .then((user) => {
+        if (active) setAlreadyIn(Boolean(user));
+      })
+      .catch((caught: unknown) => {
+        if (active) showError(caught);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   function resetNotices() {
@@ -45,22 +53,24 @@ export function AuthScreen() {
   }
 
   function showError(caught: unknown) {
-    setError(caught instanceof AuthError ? caught.message : "Something went wrong. Try again.");
+    setError(caught instanceof Error ? caught.message : "Something went wrong. Try again.");
   }
 
   async function onRegister(event: FormEvent) {
     event.preventDefault();
     resetNotices();
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     setPending(true);
     try {
-      const result = await registerAccount({ name, email, password, confirmPassword });
-      setEmail(result.email);
-      setDemoCode(result.demoCode);
+      await registerAccount({ name, email, password });
       setPassword("");
       setConfirmPassword("");
       setCode("");
       setMode("verify");
-      setMessage("Account created. Enter the 6-digit code to verify this email.");
+      setMessage("Account created. Check your email for the 6-digit verification code.");
     } catch (caught) {
       showError(caught);
     } finally {
@@ -75,7 +85,6 @@ export function AuthScreen() {
     try {
       await verifyEmailCode(email, code);
       setCode("");
-      setDemoCode(null);
       setMode("login");
       setMessage("Email verified. You can sign in now.");
     } catch (caught) {
@@ -89,10 +98,9 @@ export function AuthScreen() {
     resetNotices();
     setPending(true);
     try {
-      const nextCode = await resendPracticeCode(email);
-      setDemoCode(nextCode);
+      await resendVerificationCode(email);
       setCode("");
-      setMessage("A new code is ready. The previous code no longer works.");
+      setMessage("If that account is waiting for verification, a new code was sent.");
     } catch (caught) {
       showError(caught);
     } finally {
@@ -109,11 +117,10 @@ export function AuthScreen() {
       router.push("/profile");
     } catch (caught) {
       showError(caught);
-      if (caught instanceof AuthError && caught.message.includes("Verify your email")) {
-        const practice = getPracticeCode(email);
-        if (practice) setDemoCode(practice);
+      if (caught instanceof AuthApiError && caught.status === 403) {
         setMode("verify");
       }
+    } finally {
       setPending(false);
     }
   }
@@ -122,7 +129,7 @@ export function AuthScreen() {
     <div className="flex flex-1 flex-col bg-[#f3efe6] text-[#1c1915]">
       <header className="flex items-center justify-between px-6 py-5 sm:px-10">
         <p className="text-sm font-semibold tracking-[0.18em] uppercase">Practice Login</p>
-        <p className="text-sm text-[#6b645b]">Frontend only</p>
+        <p className="text-sm text-[#6b645b]">Email-verified sign-in</p>
       </header>
 
       <main className="mx-auto grid w-full max-w-6xl flex-1 items-start gap-10 px-6 pb-16 sm:px-10 lg:grid-cols-[1fr_28rem]">
@@ -132,9 +139,8 @@ export function AuthScreen() {
             Register, confirm the code, then open your profile.
           </h1>
           <p className="mt-4 max-w-lg text-base leading-7 text-[#4d473f]">
-            These pages run in the browser so you can click through the flow while you study
-            the backend notes. A real server would keep accounts in PostgreSQL and email the
-            code. It would never print the code on this screen.
+            Create an account, verify the code sent to your email, and sign in. Your session is
+            managed by the server with a secure, HTTP-only cookie.
           </p>
           <ol className="mt-8 space-y-4">
             {steps.map((step, index) => (
@@ -212,7 +218,14 @@ export function AuthScreen() {
 
           {mode === "register" ? (
             <form className="mt-6 space-y-4" onSubmit={onRegister}>
-              <Field label="Name" value={name} onChange={setName} autoComplete="name" />
+              <Field
+                label="Name"
+                value={name}
+                onChange={setName}
+                autoComplete="name"
+                minLength={2}
+                maxLength={80}
+              />
               <Field
                 label="Email"
                 type="email"
@@ -226,7 +239,9 @@ export function AuthScreen() {
                 value={password}
                 onChange={setPassword}
                 autoComplete="new-password"
-                hint="At least 10 characters, with a letter and a number."
+                hint="Use between 10 and 128 characters."
+                minLength={10}
+                maxLength={128}
               />
               <Field
                 label="Confirm password"
@@ -234,6 +249,7 @@ export function AuthScreen() {
                 value={confirmPassword}
                 onChange={setConfirmPassword}
                 autoComplete="new-password"
+                maxLength={128}
               />
               <Submit pending={pending} label="Create account" />
             </form>
@@ -250,18 +266,6 @@ export function AuthScreen() {
                 autoComplete="one-time-code"
                 maxLength={6}
               />
-              {demoCode ? (
-                <div className="rounded-2xl border border-dashed border-[#d6c8b4] bg-[#fbf8f2] px-4 py-3">
-                  <p className="text-xs font-medium tracking-wide text-[#6b645b] uppercase">
-                    Practice inbox
-                  </p>
-                  <p className="mt-1 font-mono text-2xl tracking-[0.3em] text-[#14221f]">{demoCode}</p>
-                  <p className="mt-2 text-xs leading-5 text-[#6b645b]">
-                    Shown here only because this browser demo has no mail server. The learning
-                    notes explain how a real API emails the code and leaves it out of the response.
-                  </p>
-                </div>
-              ) : null}
               <Submit pending={pending} label="Verify email" />
               <button
                 type="button"
@@ -289,6 +293,7 @@ export function AuthScreen() {
                 value={password}
                 onChange={setPassword}
                 autoComplete="current-password"
+                maxLength={128}
               />
               <Submit pending={pending} label="Sign in" />
               <button
@@ -296,8 +301,6 @@ export function AuthScreen() {
                 className="w-full text-sm font-medium text-[#14221f] underline"
                 onClick={() => {
                   resetNotices();
-                  const practice = getPracticeCode(email);
-                  if (practice) setDemoCode(practice);
                   setMode("verify");
                 }}
               >
@@ -320,6 +323,7 @@ function Field({
   hint,
   inputMode,
   maxLength,
+  minLength,
 }: {
   label: string;
   value: string;
@@ -329,6 +333,7 @@ function Field({
   hint?: string;
   inputMode?: "numeric" | "text";
   maxLength?: number;
+  minLength?: number;
 }) {
   const id = label.toLowerCase().replace(/\s+/g, "-");
   return (
@@ -341,6 +346,7 @@ function Field({
         autoComplete={autoComplete}
         inputMode={inputMode}
         maxLength={maxLength}
+        minLength={minLength}
         onChange={(event) => onChange(event.target.value)}
         className="mt-1 w-full rounded-xl border border-[#e2d8c8] bg-[#fffcf8] px-3 py-2.5 text-base outline-none ring-[#9a3412] focus:ring-2"
         required

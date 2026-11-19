@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Practice Login",
-  description: "A two-page practice frontend for learning a secure login flow.",
+  title: "Secure Login",
+  description: "Email-verified sign-in and account profile.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
